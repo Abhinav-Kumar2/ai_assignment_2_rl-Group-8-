@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Model checkpoints and weights (keep directories tracked)
+models/*
+
+# Experiment logs and generated result artifacts
+results/*
+
+# IDEs and local configurations
+.vscode/
+.idea/
+*.swp
+.DS_Store
