@@ -4,11 +4,19 @@ Autonomous drone navigation in complex, disaster-affected environments using rei
 
 ## Environment Setup
 
-Create and activate a virtual environment:
-
+### Linux / macOS
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### Windows (PowerShell)
+```powershell
+python3.11 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
@@ -17,4 +25,3 @@ pip install -r requirements.txt
 - `experiments/`: Scripts and configurations for running training and evaluation runs.
 - `models/`: Saved model checkpoints and policy weights.
 - `results/`: Evaluation logs, metrics, plots, and trajectories.
-
