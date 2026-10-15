@@ -42,3 +42,17 @@ count of how often it has visited each cell. At every step it:
 On the default map it reaches the target in 18 steps (the shortest possible path) with a total
 reward of 66.2 and no collisions.
  
+## PPO Agent
+ 
+`ppo_agent.py` trains a stable-baselines3 PPO agent (MLP 64x64, 8 parallel envs, 50k timesteps,
+about 30 seconds on CPU) on the same 8-value observation. An `EvalCallback` keeps the best greedy
+policy in `models/ppo_drone_best.zip`, and the learning curve goes to `results/ppo_learning_curve.png`.
+ 
+```bash
+uv run python ppo_agent.py train --timesteps 50000
+uv run python ppo_agent.py eval --episodes 10
+```
+ 
+It also reaches the target in 18 steps with reward 66.2 and no collisions, matching the rule-based
+agent. It finds this path within the first ~5k timesteps, because on the default map the greedy
+"down, then right" route is already obstacle-free and optimal.
