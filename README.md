@@ -76,9 +76,35 @@ Result: from (0, 0) the greedy policy takes the optimal 18-step path (reward 66.
 target with no collisions from all 90 free start cells (mean 9.1 steps, mean reward 58.2), matching the
 rule-based agent. The training curve is in `results/grpo_training_curve.png`.
 
+## 3D Environment
+
+`environment_3d.py` has `DroneNavEnv3D`, the same task in a 10x10x10 grid: fly from (0, 0, 0) to
+(9, 9, 9). It keeps the 2D API and rewards (-0.1 per step, +1 per cell of progress, -10 and episode
+end on collision, +50 at the target) with `max_steps=200`.
+
+- Actions, `Discrete(6)`: 0-3 are the 2D moves (Up/Down/Left/Right), 4 is Ascend, 5 is Descend.
+- Observation, `Box(12,)`: normalized position (row, col, alt), normalized offset to the target, then
+  six "blocked" flags in action order.
+
+The map is split by two collapsed-building walls that span the whole grid, each with one 2x2 gap:
+row 3 is open only on the east side near the ground (cols 7-8, alt 0-1), and row 6 only on the west
+side high up (cols 1-2, alt 7-8). Buildings and floating debris fill the zones between them. Between
+the gaps the drone has to fly west, away from the target, so the shortest path is 37 steps (reward
+73.3) against a straight-line distance of 27, and no greedy route exists.
+
+```bash
+uv run python environment_3d.py   # checks reachability (no sealed-off cells), the forced detour, and random rollouts
+```
+
+Sanity checks: a greedy "move toward the target" policy gets stuck in the first zone; a 3D port of
+the visit-count rule-based agent reaches the target but needs 247 steps, so it times out at 200;
+random actions never reach the target (1000 episodes). The existing agents still use the 2D
+environment and need adapting to the 6 actions and 12-value observation.
+
 ## Project Structure
 
 - `environment.py`: `DroneNavEnv`, the 10x10 grid environment.
+- `environment_3d.py`: `DroneNavEnv3D`, the 10x10x10 environment with altitude.
 - `rule_based_agent.py`: non-learning baseline agent (greedy + obstacle avoidance + visit memory).
 - `ppo_agent.py`: PPO agent (stable-baselines3): training, evaluation and comparison with the baseline.
 - `grpo_agent.py`: GRPO agent (PyTorch, no critic): training, evaluation and comparison with the baseline.
