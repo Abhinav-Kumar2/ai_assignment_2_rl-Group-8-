@@ -114,10 +114,12 @@ class Visualizer3D:
                 self.obs_coords[:, 1],
                 self.obs_coords[:, 0],
                 self.obs_coords[:, 2],
-                c="dimgray",
+                c="#222222",
                 marker="s",
-                s=35,
-                alpha=0.25,
+                s=70,
+                alpha=0.85,
+                edgecolors="black",
+                linewidths=0.5,
                 label="obstacles",
             )
 
