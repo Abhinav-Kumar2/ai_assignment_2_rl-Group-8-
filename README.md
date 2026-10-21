@@ -52,9 +52,28 @@ The display tracks:
 
 ---
 
+## 3D PPO Agent
+
+`ppo_3d_agent.py` trains a Stable-Baselines3 PPO agent (`MlpPolicy` 64x64) directly on `DroneNavEnv3D` without launching any visualization window.
+
+### Training Command
+```bash
+python ppo_3d_agent.py --timesteps 50000 --seed 0
+```
+This runs headless PPO training across 8 vectorized environments, verifies the 12-dimensional observation and 6-discrete action spaces, and saves the trained policy to `models/ppo_drone_3d.zip`.
+
+### Smoke Test Mode
+Run a quick end-to-end check (1,024 timesteps, model save, and reload verification on a fresh environment):
+```bash
+python ppo_3d_agent.py --smoke-test
+```
+
+---
+
 ## Project Structure
 
 - `3d_environment.py`: `DroneNavEnv3D`, the 10x10x10 voxel grid environment with altitude and disaster barriers.
+- `ppo_3d_agent.py`: PPO training and verification pipeline for the 3D environment.
 - `visualize_3d.py`: Interactive 3D Matplotlib visualizer for manual simulation control and inspection.
 - `models/`: Saved model checkpoints and policy weights.
 - `results/`: Evaluation logs, metrics, plots, and trajectories.
