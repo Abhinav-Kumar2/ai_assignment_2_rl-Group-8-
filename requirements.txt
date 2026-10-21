@@ -2,3 +2,5 @@ gymnasium
 stable-baselines3
 numpy
 matplotlib
+PyQt5
+torch
