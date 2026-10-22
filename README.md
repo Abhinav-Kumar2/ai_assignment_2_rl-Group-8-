@@ -68,6 +68,21 @@ Run a quick end-to-end check (1,024 timesteps, model save, and reload verificati
 python ppo_3d_agent.py --smoke-test
 ```
 
+### Evaluation Command
+Evaluate the trained 3D policy deterministically without re-training:
+```bash
+python ppo_3d_agent.py --eval --episodes 10
+```
+Optional flags:
+- `--model-path`: Custom checkpoint path (defaults to `models/ppo_drone_3d.zip`).
+- `--episodes`: Number of evaluation episodes (defaults to `10`).
+- `--seed`: Initial evaluation seed (defaults to `0`).
+
+Artifacts generated under `results/`:
+- `results/ppo_3d_evaluation_episodes.csv`: Per-episode returns, step count, and termination status.
+- `results/ppo_3d_evaluation_summary.json`: Success rate, collision rate, truncation rate, mean length, and mean reward.
+- `results/ppo_3d_evaluation_metrics.png`: Visual plot of outcome rates and per-episode rewards.
+
 ---
 
 ## Project Structure

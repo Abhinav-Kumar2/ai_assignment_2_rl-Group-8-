@@ -1,7 +1,9 @@
 # ppo training script for 3d drone navigation in dronenavenv3d
 
 import argparse
+import csv
 import importlib
+import json
 import os
 import numpy as np
 from stable_baselines3 import PPO
@@ -86,16 +88,165 @@ def verify_saved_model(path=MODEL_PATH):
     print(f"  terminated: {terminated}, truncated: {truncated}")
 
 
+RESULTS_DIR = "results"
+
+
+def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR, verbose=True):
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"model file not found at {model_path}")
+
+    os.makedirs(output_dir, exist_ok=True)
+    model = PPO.load(model_path, device="cpu")
+    env = DroneNavEnv3D()
+
+    per_episode = []
+    for ep in range(episodes):
+        ep_seed = seed + ep
+        obs, _ = env.reset(seed=ep_seed)
+        total_reward = 0.0
+        steps = 0
+        terminated = False
+        truncated = False
+        collision = False
+
+        while not (terminated or truncated):
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, terminated, truncated, info = env.step(action)
+            total_reward += float(reward)
+            steps += 1
+            if info.get("collision", False):
+                collision = True
+
+        target_reached = env.drone_pos == env.target_pos
+        if target_reached:
+            termination_reason = "target_reached"
+        elif collision:
+            termination_reason = "collision"
+        elif truncated:
+            termination_reason = "time_limit"
+        else:
+            termination_reason = "other"
+
+        per_episode.append({
+            "episode": ep + 1,
+            "seed": ep_seed,
+            "reward": round(total_reward, 3),
+            "steps": steps,
+            "success": target_reached,
+            "collision": collision,
+            "truncated": truncated,
+            "termination_reason": termination_reason,
+        })
+
+        if verbose:
+            print(f"Episode {ep + 1:3d}: success={target_reached} steps={steps:3d} "
+                  f"reward={total_reward:7.2f} reason={termination_reason}")
+
+    n = len(per_episode)
+    successes = sum(1 for e in per_episode if e["success"])
+    collisions = sum(1 for e in per_episode if e["collision"])
+    truncations = sum(1 for e in per_episode if e["truncated"])
+    mean_length = float(np.mean([e["steps"] for e in per_episode])) if n else 0.0
+    mean_reward = float(np.mean([e["reward"] for e in per_episode])) if n else 0.0
+
+    summary = {
+        "model_path": model_path,
+        "episodes": n,
+        "success_rate": round(successes / n, 4) if n else 0.0,
+        "collision_rate": round(collisions / n, 4) if n else 0.0,
+        "truncation_rate": round(truncations / n, 4) if n else 0.0,
+        "average_episode_length": round(mean_length, 2),
+        "average_episode_reward": round(mean_reward, 3),
+        "success_count": successes,
+        "collision_count": collisions,
+        "truncation_count": truncations,
+    }
+
+    # Save per-episode CSV
+    csv_path = os.path.join(output_dir, "ppo_3d_evaluation_episodes.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "episode", "seed", "reward", "steps", "success", "collision", "truncated", "termination_reason"
+        ])
+        writer.writeheader()
+        writer.writerows(per_episode)
+
+    # Save summary JSON
+    json_path = os.path.join(output_dir, "ppo_3d_evaluation_summary.json")
+    with open(json_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    # Generate graph
+    plot_path = os.path.join(output_dir, "ppo_3d_evaluation_metrics.png")
+    _plot_evaluation_metrics(per_episode, summary, plot_path)
+
+    print(f"\nEvaluation Summary ({n} episodes):")
+    print(f"  Success rate:           {summary['success_rate'] * 100:.1f}% ({successes}/{n})")
+    print(f"  Collision rate:         {summary['collision_rate'] * 100:.1f}% ({collisions}/{n})")
+    print(f"  Truncation rate:        {summary['truncation_rate'] * 100:.1f}% ({truncations}/{n})")
+    print(f"  Average episode length: {summary['average_episode_length']:.2f}")
+    print(f"  Average episode reward: {summary['average_episode_reward']:.2f}")
+    print(f"Saved artifacts:")
+    print(f"  CSV:   {csv_path}")
+    print(f"  JSON:  {json_path}")
+    print(f"  Plot:  {plot_path}")
+
+    return summary
+
+
+def _plot_evaluation_metrics(per_episode, summary, output_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+
+    # Rates bar chart
+    rates = [summary["success_rate"] * 100, summary["collision_rate"] * 100, summary["truncation_rate"] * 100]
+    labels = ["Success", "Collision", "Truncated"]
+    colors = ["#2ca02c", "#d62728", "#ff7f0e"]
+    bars = ax1.bar(labels, rates, color=colors, alpha=0.85)
+    ax1.set_ylim(0, 105)
+    ax1.set_ylabel("Rate (%)")
+    ax1.set_title("3D PPO Outcome Rates")
+    for bar in bars:
+        h = bar.get_height()
+        ax1.annotate(f"{h:.1f}%", xy=(bar.get_x() + bar.get_width() / 2, h),
+                     xytext=(0, 3), textcoords="offset points", ha="center", va="bottom", fontsize=9)
+
+    # Per-episode reward plot
+    rewards = [e["reward"] for e in per_episode]
+    episodes = [e["episode"] for e in per_episode]
+    ax2.plot(episodes, rewards, marker="o", color="#1f77b4", label="Episode Reward")
+    ax2.axhline(summary["average_episode_reward"], color="gray", linestyle="--",
+                label=f"Mean: {summary['average_episode_reward']:.1f}")
+    ax2.set_xlabel("Episode")
+    ax2.set_ylabel("Reward")
+    ax2.set_title("Reward per Episode")
+    ax2.legend(fontsize=8)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=120)
+    plt.close(fig)
+
+
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="PPO 3D Agent training and evaluation")
+    parser.add_argument("--eval", action="store_true", help="evaluate trained model without training")
+    parser.add_argument("--model-path", type=str, default=MODEL_PATH, help="path to model zip")
+    parser.add_argument("--episodes", type=int, default=10, help="number of evaluation episodes")
     parser.add_argument("--timesteps", type=int, default=50_000, help="training timesteps")
     parser.add_argument("--seed", type=int, default=0, help="random seed")
     parser.add_argument("--smoke-test", action="store_true", help="run short smoke test (1024 timesteps)")
     args = parser.parse_args()
 
+    if args.eval:
+        evaluate(model_path=args.model_path, episodes=args.episodes, seed=args.seed)
+        return
+
     steps = 1024 if args.smoke_test else args.timesteps
     train(timesteps=steps, seed=args.seed, n_envs=4 if args.smoke_test else 8, verbose=0)
-    verify_saved_model()
+    verify_saved_model(args.model_path)
 
 
 if __name__ == "__main__":
