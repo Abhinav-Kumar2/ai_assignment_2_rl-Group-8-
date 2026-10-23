@@ -4,7 +4,11 @@ import argparse
 import csv
 import json
 import os
+from collections import deque
+
+import gymnasium as gym
 import numpy as np
+import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 
@@ -16,6 +20,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 MODEL_PATH = os.path.join(MODEL_DIR, "ppo_drone_3d.zip")
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
+DEFAULT_GPS_NOISE = 0.5
 
 
 class PPOAgent3D(Agent3D):
@@ -36,7 +41,78 @@ class PPOAgent3D(Agent3D):
         return int(action)
 
 
-def train(timesteps=50_000, seed=0, n_envs=8, verbose=1, model_path=MODEL_PATH):
+class TrainingStartsWrapper(gym.Wrapper):
+    """
+    training-only wrapper: with probability random_start_prob an episode starts
+    from a random free cell instead of the fixed start, and gps noise is drawn
+    per episode from [0, max_gps_noise].
+
+    the map needs a detour away from the target, so from the fixed start alone
+    ppo only ever sees the "fly at the target and crash" outcome. random starts
+    let it learn the way through each wall gap from nearby cells first, then
+    chain those pieces back to the real start. varying the noise level makes
+    the policy robust to any gps noise up to max_gps_noise. rewards and
+    observations are the env's own, evaluation always uses the plain env.
+
+    with geodesic_shaping the env's "closer to the target" bonus (manhattan
+    distance) is swapped for the same bonus measured along the shortest free
+    path (bfs over the map). the manhattan bonus punishes the westward detour
+    that the map requires and is what traps ppo against the walls. both are
+    potential-based shaping, so the best policy is unchanged; the policy still
+    only sees the observation, the map is used for the training reward only.
+    """
+
+    def __init__(self, env, random_start_prob=0.5, max_gps_noise=0.0, geodesic_shaping=True):
+        super().__init__(env)
+        self.random_start_prob = random_start_prob
+        self.max_gps_noise = max_gps_noise
+        self.geodesic_shaping = geodesic_shaping
+        base = env.unwrapped
+        self.path_dist = self._bfs_from_target(base)
+        self.free_cells = [
+            (r, c, a)
+            for r in range(base.height)
+            for c in range(base.width)
+            for a in range(base.depth)
+            if (r, c, a) not in base.obstacles and (r, c, a) != base.target_pos
+        ]
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        base = self.env.unwrapped
+        rng = base.np_random  # seeded by the reset above
+        base.gps_noise_std = float(rng.uniform(0.0, self.max_gps_noise)) if self.max_gps_noise > 0 else 0.0
+        if rng.random() < self.random_start_prob:
+            base.drone_pos = self.free_cells[rng.integers(len(self.free_cells))]
+        return base._get_obs(), info
+
+    @staticmethod
+    def _bfs_from_target(base):
+        dist = {base.target_pos: 0}
+        queue = deque([base.target_pos])
+        while queue:
+            pos = queue.popleft()
+            for dr, dc, da in base._action_to_delta.values():
+                nxt = (pos[0] + dr, pos[1] + dc, pos[2] + da)
+                if nxt not in dist and not base._is_blocked(nxt):
+                    dist[nxt] = dist[pos] + 1
+                    queue.append(nxt)
+        return dist
+
+    def step(self, action):
+        base = self.env.unwrapped
+        prev = base.drone_pos
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        if self.geodesic_shaping:
+            curr = base.drone_pos
+            manhattan_bonus = base._dist_to_target(prev) - base._dist_to_target(curr)
+            path_bonus = self.path_dist[prev] - self.path_dist[curr]
+            reward = reward - manhattan_bonus + path_bonus
+        return obs, reward, terminated, truncated, info
+
+
+def train(timesteps=50_000, seed=0, n_envs=8, verbose=1, model_path=MODEL_PATH,
+          random_start_prob=0.5, max_gps_noise=0.0, geodesic_shaping=True):
     os.makedirs(os.path.dirname(model_path) or ".", exist_ok=True)
 
     # verify observation and action spaces before training
@@ -52,10 +128,20 @@ def train(timesteps=50_000, seed=0, n_envs=8, verbose=1, model_path=MODEL_PATH):
     print(f"  seed: {seed}")
     print(f"  parallel envs: {n_envs}")
     print(f"  policy: MlpPolicy (64x64)")
+    print(f"  random start prob: {random_start_prob}")
+    print(f"  gps noise std per episode: uniform [0, {max_gps_noise}]")
+    print(f"  shortest-path reward shaping: {geodesic_shaping}")
     print(f"  model output: {model_path}")
 
+    # a 64x64 mlp is fastest on one cpu thread; extra threads only add overhead
+    torch.set_num_threads(1)
+
     # vectorize environments for training without gui
-    env = make_vec_env(DroneNavEnv3D, n_envs=n_envs, seed=seed)
+    env = make_vec_env(
+        DroneNavEnv3D, n_envs=n_envs, seed=seed, wrapper_class=TrainingStartsWrapper,
+        wrapper_kwargs=dict(random_start_prob=random_start_prob, max_gps_noise=max_gps_noise,
+                            geodesic_shaping=geodesic_shaping),
+    )
 
     model = PPO(
         "MlpPolicy",
@@ -70,7 +156,7 @@ def train(timesteps=50_000, seed=0, n_envs=8, verbose=1, model_path=MODEL_PATH):
         clip_range=0.2,
         policy_kwargs=dict(net_arch=[64, 64]),
         seed=seed,
-        device="cuda:0",
+        device="cpu",
         verbose=verbose,
     )
 
@@ -80,10 +166,10 @@ def train(timesteps=50_000, seed=0, n_envs=8, verbose=1, model_path=MODEL_PATH):
     return model
 
 
-def verify_saved_model(path=MODEL_PATH):
+def verify_saved_model(path=MODEL_PATH, gps_noise=0.0):
     print(f"\nverifying model loading on fresh DroneNavEnv3D instance...")
     agent = PPOAgent3D(path)
-    env = DroneNavEnv3D()
+    env = DroneNavEnv3D(gps_noise_std=gps_noise)
     obs, info = env.reset(seed=42)
 
     total_reward = 0.0
@@ -104,15 +190,23 @@ def verify_saved_model(path=MODEL_PATH):
     print(f"  terminated: {terminated}, truncated: {truncated}")
 
 
-def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR, verbose=True):
+def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR, verbose=True, gps_noise=0.0,
+             random_starts=False):
     os.makedirs(output_dir, exist_ok=True)
     agent = PPOAgent3D(model_path)
-    env = DroneNavEnv3D()
+    env = DroneNavEnv3D(gps_noise_std=gps_noise)
+    # random_starts: each episode starts from a random free cell instead of the fixed start
+    starts = TrainingStartsWrapper(DroneNavEnv3D(), geodesic_shaping=False).free_cells if random_starts else None
+    start_rng = np.random.default_rng(seed)
 
     per_episode = []
     for ep in range(episodes):
         ep_seed = seed + ep
         obs, _ = env.reset(seed=ep_seed)
+        if starts is not None:
+            env.drone_pos = starts[start_rng.integers(len(starts))]
+            obs = env._get_obs()
+        start_pos = env.drone_pos
         agent.reset(env)
         total_reward = 0.0
         steps = 0
@@ -141,6 +235,7 @@ def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR,
         per_episode.append({
             "episode": ep + 1,
             "seed": ep_seed,
+            "start": str(start_pos),
             "reward": round(total_reward, 3),
             "steps": steps,
             "success": target_reached,
@@ -162,6 +257,8 @@ def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR,
 
     summary = {
         "model_path": os.path.relpath(model_path, BASE_DIR),
+        "gps_noise_std": gps_noise,
+        "random_starts": random_starts,
         "episodes": n,
         "success_rate": round(successes / n, 4) if n else 0.0,
         "collision_rate": round(collisions / n, 4) if n else 0.0,
@@ -173,25 +270,30 @@ def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR,
         "truncation_count": truncations,
     }
 
+    # one set of files per noise level, e.g. ppo_3d_evaluation_noise0.5_summary.json
+    prefix = os.path.join(output_dir, "ppo_3d_evaluation" + (f"_noise{gps_noise:g}" if gps_noise > 0 else "")
+                          + ("_random_starts" if random_starts else ""))
+
     # Save per-episode CSV
-    csv_path = os.path.join(output_dir, "ppo_3d_evaluation_episodes.csv")
+    csv_path = prefix + "_episodes.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "episode", "seed", "reward", "steps", "success", "collision", "truncated", "termination_reason"
+            "episode", "seed", "start", "reward", "steps", "success", "collision", "truncated", "termination_reason"
         ])
         writer.writeheader()
         writer.writerows(per_episode)
 
     # Save summary JSON
-    json_path = os.path.join(output_dir, "ppo_3d_evaluation_summary.json")
+    json_path = prefix + "_summary.json"
     with open(json_path, "w") as f:
         json.dump(summary, f, indent=2)
 
     # Generate graph
-    plot_path = os.path.join(output_dir, "ppo_3d_evaluation_metrics.png")
+    plot_path = prefix + "_metrics.png"
     _plot_evaluation_metrics(per_episode, summary, plot_path)
 
-    print(f"\nEvaluation Summary ({n} episodes):")
+    print(f"\nEvaluation Summary ({n} episodes, gps noise std {gps_noise:g}, "
+          f"{'random' if random_starts else 'fixed'} starts):")
     print(f"  Success rate:           {summary['success_rate'] * 100:.1f}% ({successes}/{n})")
     print(f"  Collision rate:         {summary['collision_rate'] * 100:.1f}% ({collisions}/{n})")
     print(f"  Truncation rate:        {summary['truncation_rate'] * 100:.1f}% ({truncations}/{n})")
@@ -219,7 +321,7 @@ def _plot_evaluation_metrics(per_episode, summary, output_path):
     bars = ax1.bar(labels, rates, color=colors, alpha=0.85)
     ax1.set_ylim(0, 105)
     ax1.set_ylabel("Rate (%)")
-    ax1.set_title("3D PPO Outcome Rates")
+    ax1.set_title(f"3D PPO Outcome Rates (gps noise {summary['gps_noise_std']:g})")
     for bar in bars:
         h = bar.get_height()
         ax1.annotate(f"{h:.1f}%", xy=(bar.get_x() + bar.get_width() / 2, h),
@@ -246,19 +348,26 @@ def main():
     parser.add_argument("--eval", action="store_true", help="evaluate trained model without training")
     parser.add_argument("--model-path", type=str, default=MODEL_PATH, help="path to model zip")
     parser.add_argument("--episodes", type=int, default=10, help="number of evaluation episodes")
-    parser.add_argument("--timesteps", type=int, default=50_000, help="training timesteps")
+    parser.add_argument("--timesteps", type=int, default=1_000_000, help="training timesteps")
     parser.add_argument("--seed", type=int, default=0, help="random seed")
+    parser.add_argument("--gps-noise", type=float, default=DEFAULT_GPS_NOISE,
+                        help="gps noise std (grid cells): evaluation noise, and the max noise sampled per training episode")
+    parser.add_argument("--random-start-prob", type=float, default=0.5,
+                        help="fraction of training episodes that start from a random free cell")
+    parser.add_argument("--random-starts", action="store_true",
+                        help="evaluate from random free start cells instead of the fixed start")
     parser.add_argument("--smoke-test", action="store_true", help="run short smoke test (1024 timesteps)")
     args = parser.parse_args()
 
     if args.eval:
-        evaluate(model_path=args.model_path, episodes=args.episodes, seed=args.seed)
+        evaluate(model_path=args.model_path, episodes=args.episodes, seed=args.seed, gps_noise=args.gps_noise,
+                 random_starts=args.random_starts)
         return
 
     steps = 1024 if args.smoke_test else args.timesteps
     train(timesteps=steps, seed=args.seed, n_envs=4 if args.smoke_test else 8, verbose=0,
-          model_path=args.model_path)
-    verify_saved_model(args.model_path)
+          model_path=args.model_path, random_start_prob=args.random_start_prob, max_gps_noise=args.gps_noise)
+    verify_saved_model(args.model_path, gps_noise=args.gps_noise)
 
 
 if __name__ == "__main__":

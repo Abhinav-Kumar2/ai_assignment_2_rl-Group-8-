@@ -157,6 +157,14 @@ class Visualizer3D:
             self.agent_step()
         return self.total_reward
 
+    def gps_reading(self):
+        """(row, col, alt) the agent observed: DroneNavEnv3D obs indices 0-2 are the normalized gps position"""
+        try:
+            dims = np.array([self.env.height, self.env.width, self.env.depth], dtype=float) - 1
+            return np.asarray(self.obs[:3], dtype=float) * dims
+        except (TypeError, IndexError, AttributeError):
+            return None
+
     def render(self):
         # ax.clear() would also reset the camera, so keep the user's view
         elev, azim = self.ax.elev, self.ax.azim
@@ -204,6 +212,20 @@ class Visualizer3D:
             c=drone_color, marker="o", s=130, edgecolor="black", label="drone", depthshade=False
         )
 
+        # where the agent thinks it is: the gps reading in the observation (only differs with gps noise)
+        gps = self.gps_reading()
+        gps_noisy = gps is not None and getattr(self.env, "gps_noise_std", 0.0) > 0
+        if gps_noisy:
+            self.ax.scatter(
+                [gps[1]], [gps[0]], [gps[2]],
+                facecolors="none", edgecolors="magenta", marker="o", s=160, linewidths=1.5,
+                label="gps reading", depthshade=False
+            )
+            self.ax.plot(
+                [drone[1], gps[1]], [drone[0], gps[0]], [drone[2], gps[2]],
+                color="magenta", linestyle=":", linewidth=1
+            )
+
         # half-cell margin so markers on the border are not clipped
         self.ax.set_xlim(-0.5, self.env.width - 0.5)
         self.ax.set_ylim(self.env.height - 0.5, -0.5)
@@ -212,13 +234,14 @@ class Visualizer3D:
         self.ax.set_ylabel("row (y / south)")
         self.ax.set_zlabel("alt (z / up)")
 
+        gps_text = f" (gps: {tuple(round(float(g), 1) for g in gps)})" if gps_noisy else ""
         controller = "manual"
         if self.agent is not None:
             controller = f"{getattr(self.agent, 'name', 'agent')} ({'playing' if self.playing else 'paused'})"
         self.ax.set_title(
             f"episode {self.episode} | step: {self.env.current_step}/{self.env.max_steps} | "
             f"status: {self.status_msg} | return: {self.total_reward:.1f}\n"
-            f"pos: {drone} | target: {target} | last: {self.last_action_desc} (r={self.last_reward:.1f}) | "
+            f"pos: {drone}{gps_text} | target: {target} | last: {self.last_action_desc} (r={self.last_reward:.1f}) | "
             f"control: {controller}",
             fontsize=9,
         )
@@ -292,7 +315,8 @@ def main():
                         help="agent to play: a name from agents_3d.AGENT_REGISTRY (ppo, random) or module:Class")
     parser.add_argument("--model-path", type=str, default=None,
                         help="model file passed to the agent as model_path (e.g. for ppo)")
-    parser.add_argument("--gps-noise", type=float, default=0.0, help="gps_noise_std for the environment")
+    parser.add_argument("--gps-noise", type=float, default=0.0,
+                        help="gps_noise_std for the environment (grid cells); the noisy reading is drawn in magenta")
     parser.add_argument("--seed", type=int, default=None, help="seed for the first env.reset()")
     parser.add_argument("--interval", type=int, default=250, help="ms between agent steps when playing")
     parser.add_argument("--autoplay", action="store_true", help="start playing the agent right away")
