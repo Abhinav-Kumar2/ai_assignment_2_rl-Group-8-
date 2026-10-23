@@ -2,23 +2,42 @@
 
 import argparse
 import csv
-import importlib
 import json
 import os
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.monitor import Monitor
 
-env_mod = importlib.import_module("3d_environment")
-DroneNavEnv3D = env_mod.DroneNavEnv3D
+from agents_3d import Agent3D
+from environment_3d import DroneNavEnv3D
 
-MODEL_DIR = "models"
+# paths are relative to this file so the script works from any working directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.join(BASE_DIR, "models")
 MODEL_PATH = os.path.join(MODEL_DIR, "ppo_drone_3d.zip")
+RESULTS_DIR = os.path.join(BASE_DIR, "results")
 
 
-def train(timesteps=50_000, seed=0, n_envs=8, verbose=1):
-    os.makedirs(MODEL_DIR, exist_ok=True)
+class PPOAgent3D(Agent3D):
+    """trained ppo policy wrapped in the Agent3D interface used by visualizer_3d.py"""
+
+    name = "ppo"
+
+    def __init__(self, model_path=MODEL_PATH, deterministic=True):
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"model file not found at {model_path} (train one with: uv run python ppo_agent_3d.py)"
+            )
+        self.model = PPO.load(model_path, device="cpu")
+        self.deterministic = deterministic
+
+    def act(self, obs, env):
+        action, _ = self.model.predict(obs, deterministic=self.deterministic)
+        return int(action)
+
+
+def train(timesteps=50_000, seed=0, n_envs=8, verbose=1, model_path=MODEL_PATH):
+    os.makedirs(os.path.dirname(model_path) or ".", exist_ok=True)
 
     # verify observation and action spaces before training
     check_env = DroneNavEnv3D()
@@ -33,7 +52,7 @@ def train(timesteps=50_000, seed=0, n_envs=8, verbose=1):
     print(f"  seed: {seed}")
     print(f"  parallel envs: {n_envs}")
     print(f"  policy: MlpPolicy (64x64)")
-    print(f"  model output: {MODEL_PATH}")
+    print(f"  model output: {model_path}")
 
     # vectorize environments for training without gui
     env = make_vec_env(DroneNavEnv3D, n_envs=n_envs, seed=seed)
@@ -51,22 +70,19 @@ def train(timesteps=50_000, seed=0, n_envs=8, verbose=1):
         clip_range=0.2,
         policy_kwargs=dict(net_arch=[64, 64]),
         seed=seed,
-        device="cpu",
+        device="cuda:0",
         verbose=verbose,
     )
 
     model.learn(total_timesteps=timesteps, progress_bar=False)
-    model.save(MODEL_PATH)
-    print(f"\nsaved trained model to: {MODEL_PATH}")
+    model.save(model_path)
+    print(f"\nsaved trained model to: {model_path}")
     return model
 
 
 def verify_saved_model(path=MODEL_PATH):
     print(f"\nverifying model loading on fresh DroneNavEnv3D instance...")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"model file not found at {path}")
-
-    model = PPO.load(path)
+    agent = PPOAgent3D(path)
     env = DroneNavEnv3D()
     obs, info = env.reset(seed=42)
 
@@ -76,7 +92,7 @@ def verify_saved_model(path=MODEL_PATH):
     truncated = False
 
     while not (terminated or truncated) and steps < 20:
-        action, _ = model.predict(obs, deterministic=True)
+        action = agent.act(obs, env)
         obs, reward, terminated, truncated, info = env.step(action)
         total_reward += reward
         steps += 1
@@ -88,21 +104,16 @@ def verify_saved_model(path=MODEL_PATH):
     print(f"  terminated: {terminated}, truncated: {truncated}")
 
 
-RESULTS_DIR = "results"
-
-
 def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR, verbose=True):
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"model file not found at {model_path}")
-
     os.makedirs(output_dir, exist_ok=True)
-    model = PPO.load(model_path, device="cpu")
+    agent = PPOAgent3D(model_path)
     env = DroneNavEnv3D()
 
     per_episode = []
     for ep in range(episodes):
         ep_seed = seed + ep
         obs, _ = env.reset(seed=ep_seed)
+        agent.reset(env)
         total_reward = 0.0
         steps = 0
         terminated = False
@@ -110,7 +121,7 @@ def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR,
         collision = False
 
         while not (terminated or truncated):
-            action, _ = model.predict(obs, deterministic=True)
+            action = agent.act(obs, env)
             obs, reward, terminated, truncated, info = env.step(action)
             total_reward += float(reward)
             steps += 1
@@ -150,7 +161,7 @@ def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR,
     mean_reward = float(np.mean([e["reward"] for e in per_episode])) if n else 0.0
 
     summary = {
-        "model_path": model_path,
+        "model_path": os.path.relpath(model_path, BASE_DIR),
         "episodes": n,
         "success_rate": round(successes / n, 4) if n else 0.0,
         "collision_rate": round(collisions / n, 4) if n else 0.0,
@@ -245,7 +256,8 @@ def main():
         return
 
     steps = 1024 if args.smoke_test else args.timesteps
-    train(timesteps=steps, seed=args.seed, n_envs=4 if args.smoke_test else 8, verbose=0)
+    train(timesteps=steps, seed=args.seed, n_envs=4 if args.smoke_test else 8, verbose=0,
+          model_path=args.model_path)
     verify_saved_model(args.model_path)
 
 
