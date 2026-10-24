@@ -31,7 +31,7 @@ class PPOAgent3D(Agent3D):
     def __init__(self, model_path=MODEL_PATH, deterministic=True):
         if not os.path.exists(model_path):
             raise FileNotFoundError(
-                f"model file not found at {model_path} (train one with: uv run python ppo_agent_3d.py)"
+                f"model file not found at {model_path} (train one with: python ppo_agent_3d.py)"
             )
         self.model = PPO.load(model_path, device="cpu")
         self.deterministic = deterministic

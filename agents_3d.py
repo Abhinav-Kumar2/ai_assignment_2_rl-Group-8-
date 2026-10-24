@@ -3,7 +3,7 @@
 # to plug a new agent into visualizer_3d.py:
 #   1. subclass Agent3D (or write any class with the same act/reset methods)
 #   2. implement act(obs, env) -> action int in 0..5
-#   3. run: uv run python visualizer_3d.py --agent my_module:MyAgent
+#   3. run: python visualizer_3d.py --agent my_module:MyAgent
 #      or register a short name in AGENT_REGISTRY below and use --agent <name>
 #
 # agents get the env as well as the observation so that non-learning agents

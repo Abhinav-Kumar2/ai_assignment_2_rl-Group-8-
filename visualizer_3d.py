@@ -2,10 +2,10 @@
 #
 # works with any agent that follows the Agent3D interface in agents_3d.py,
 # so a new agent can be plugged in without touching this file:
-#   uv run python visualizer_3d.py                                # manual control only
-#   uv run python visualizer_3d.py --agent ppo                    # trained 3d ppo policy
-#   uv run python visualizer_3d.py --agent my_module:MyAgent      # your own agent
-#   uv run python visualizer_3d.py --agent ppo --save results/ppo_3d_rollout.gif   # headless
+#   python visualizer_3d.py                                # manual control only
+#   python visualizer_3d.py --agent ppo                    # trained 3d ppo policy
+#   python visualizer_3d.py --agent my_module:MyAgent      # your own agent
+#   python visualizer_3d.py --agent ppo --save results/ppo_3d_rollout.gif   # headless
 #
 # keys:
 #   up arrow: move north (row - 1)
