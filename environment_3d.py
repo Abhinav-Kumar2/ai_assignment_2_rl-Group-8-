@@ -41,7 +41,8 @@ class DroneNavEnv3D(gym.Env):
     """
     metadata = {"render_modes": []}
 
-    def __init__(self, grid_size=(10, 10, 10), max_steps=200, gps_noise_std=0.0):
+    def __init__(self, grid_size=(10, 10, 10), max_steps=200, gps_noise_std=0.0,
+                 start_pos=(0, 0, 0), target_pos=None):
         super().__init__()
         if gps_noise_std < 0:
             raise ValueError(f"gps_noise_std must be >= 0, got {gps_noise_std}")
@@ -63,8 +64,8 @@ class DroneNavEnv3D(gym.Env):
             5: (0, 0, -1),  # Descend
         }
 
-        self.start_pos = (0, 0, 0)
-        self.target_pos = (self.height - 1, self.width - 1, self.depth - 1)
+        self.start_pos = tuple(start_pos)
+        self.target_pos = tuple(target_pos) if target_pos is not None else (self.height - 1, self.width - 1, self.depth - 1)
         self.obstacles = self._build_obstacles()
 
         self.drone_pos = self.start_pos
@@ -159,6 +160,11 @@ class DroneNavEnv3D(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        if options and "start_pos" in options:
+            self.start_pos = tuple(options["start_pos"])
+        if options and "target_pos" in options:
+            self.target_pos = tuple(options["target_pos"])
+            self.obstacles.discard(self.target_pos)
         self.drone_pos = self.start_pos
         self.current_step = 0
         return self._get_obs(), {}

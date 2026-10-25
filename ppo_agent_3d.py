@@ -62,19 +62,25 @@ class TrainingStartsWrapper(gym.Wrapper):
     only sees the observation, the map is used for the training reward only.
     """
 
-    def __init__(self, env, random_start_prob=0.5, max_gps_noise=0.0, geodesic_shaping=True):
+    def __init__(self, env, random_start_prob=0.5, max_gps_noise=0.0, geodesic_shaping=True,
+                 start_pos=None, target_pos=None):
         super().__init__(env)
+        base = env.unwrapped
+        if start_pos is not None:
+            base.start_pos = tuple(start_pos)
+            base.drone_pos = base.start_pos
+        if target_pos is not None:
+            base.target_pos = tuple(target_pos)
+            base.obstacles.discard(base.target_pos)
+
         self.random_start_prob = random_start_prob
         self.max_gps_noise = max_gps_noise
         self.geodesic_shaping = geodesic_shaping
-        base = env.unwrapped
         self.path_dist = self._bfs_from_target(base)
+        # Only select free cells that are reachable from the target
         self.free_cells = [
-            (r, c, a)
-            for r in range(base.height)
-            for c in range(base.width)
-            for a in range(base.depth)
-            if (r, c, a) not in base.obstacles and (r, c, a) != base.target_pos
+            pos for pos in self.path_dist.keys()
+            if pos != base.target_pos
         ]
 
     def reset(self, **kwargs):
@@ -82,7 +88,7 @@ class TrainingStartsWrapper(gym.Wrapper):
         base = self.env.unwrapped
         rng = base.np_random  # seeded by the reset above
         base.gps_noise_std = float(rng.uniform(0.0, self.max_gps_noise)) if self.max_gps_noise > 0 else 0.0
-        if rng.random() < self.random_start_prob:
+        if rng.random() < self.random_start_prob and self.free_cells:
             base.drone_pos = self.free_cells[rng.integers(len(self.free_cells))]
         return base._get_obs(), info
 
@@ -105,23 +111,27 @@ class TrainingStartsWrapper(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
         if self.geodesic_shaping:
             curr = base.drone_pos
-            manhattan_bonus = base._dist_to_target(prev) - base._dist_to_target(curr)
-            path_bonus = self.path_dist[prev] - self.path_dist[curr]
-            reward = reward - manhattan_bonus + path_bonus
+            if prev in self.path_dist and curr in self.path_dist:
+                manhattan_bonus = base._dist_to_target(prev) - base._dist_to_target(curr)
+                path_bonus = self.path_dist[prev] - self.path_dist[curr]
+                reward = reward - manhattan_bonus + path_bonus
         return obs, reward, terminated, truncated, info
 
 
 def train(timesteps=50_000, seed=0, n_envs=8, verbose=1, model_path=MODEL_PATH,
-          random_start_prob=0.5, max_gps_noise=0.0, geodesic_shaping=True):
+          random_start_prob=0.5, max_gps_noise=0.0, geodesic_shaping=True,
+          start_pos=(0, 0, 0), target_pos=None):
     os.makedirs(os.path.dirname(model_path) or ".", exist_ok=True)
 
     # verify observation and action spaces before training
-    check_env = DroneNavEnv3D()
+    check_env = DroneNavEnv3D(start_pos=start_pos, target_pos=target_pos)
     obs_space = check_env.observation_space
     act_space = check_env.action_space
     print(f"verified 3d environment spaces:")
     print(f"  observation space: {obs_space} (shape: {obs_space.shape})")
     print(f"  action space: {act_space} (n: {act_space.n})")
+    print(f"  start pos: {check_env.start_pos}")
+    print(f"  target pos: {check_env.target_pos}")
 
     print(f"\ntraining configuration:")
     print(f"  timesteps: {timesteps}")
@@ -137,8 +147,11 @@ def train(timesteps=50_000, seed=0, n_envs=8, verbose=1, model_path=MODEL_PATH,
     torch.set_num_threads(1)
 
     # vectorize environments for training without gui
+    env_kwargs = dict(start_pos=start_pos, target_pos=target_pos)
     env = make_vec_env(
-        DroneNavEnv3D, n_envs=n_envs, seed=seed, wrapper_class=TrainingStartsWrapper,
+        DroneNavEnv3D, n_envs=n_envs, seed=seed,
+        env_kwargs=env_kwargs,
+        wrapper_class=TrainingStartsWrapper,
         wrapper_kwargs=dict(random_start_prob=random_start_prob, max_gps_noise=max_gps_noise,
                             geodesic_shaping=geodesic_shaping),
     )
@@ -191,12 +204,12 @@ def verify_saved_model(path=MODEL_PATH, gps_noise=0.0):
 
 
 def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR, verbose=True, gps_noise=0.0,
-             random_starts=False):
+             random_starts=False, start_pos=(0, 0, 0), target_pos=None):
     os.makedirs(output_dir, exist_ok=True)
     agent = PPOAgent3D(model_path)
-    env = DroneNavEnv3D(gps_noise_std=gps_noise)
+    env = DroneNavEnv3D(gps_noise_std=gps_noise, start_pos=start_pos, target_pos=target_pos)
     # random_starts: each episode starts from a random free cell instead of the fixed start
-    starts = TrainingStartsWrapper(DroneNavEnv3D(), geodesic_shaping=False).free_cells if random_starts else None
+    starts = TrainingStartsWrapper(DroneNavEnv3D(start_pos=start_pos, target_pos=target_pos), geodesic_shaping=False).free_cells if random_starts else None
     start_rng = np.random.default_rng(seed)
 
     per_episode = []
@@ -356,17 +369,25 @@ def main():
                         help="fraction of training episodes that start from a random free cell")
     parser.add_argument("--random-starts", action="store_true",
                         help="evaluate from random free start cells instead of the fixed start")
+    parser.add_argument("--start", type=int, nargs=3, default=[0, 0, 0],
+                        help="start position as row col alt (default: 0 0 0)")
+    parser.add_argument("--target", type=int, nargs=3, default=None,
+                        help="target position as row col alt (default: 9 9 9)")
     parser.add_argument("--smoke-test", action="store_true", help="run short smoke test (1024 timesteps)")
     args = parser.parse_args()
 
+    start_pos = tuple(args.start)
+    target_pos = tuple(args.target) if args.target is not None else None
+
     if args.eval:
         evaluate(model_path=args.model_path, episodes=args.episodes, seed=args.seed, gps_noise=args.gps_noise,
-                 random_starts=args.random_starts)
+                 random_starts=args.random_starts, start_pos=start_pos, target_pos=target_pos)
         return
 
     steps = 1024 if args.smoke_test else args.timesteps
     train(timesteps=steps, seed=args.seed, n_envs=4 if args.smoke_test else 8, verbose=0,
-          model_path=args.model_path, random_start_prob=args.random_start_prob, max_gps_noise=args.gps_noise)
+          model_path=args.model_path, random_start_prob=args.random_start_prob, max_gps_noise=args.gps_noise,
+          start_pos=start_pos, target_pos=target_pos)
     verify_saved_model(args.model_path, gps_noise=args.gps_noise)
 
 
