@@ -20,6 +20,7 @@ import argparse
 from collections import defaultdict
 
 import numpy as np
+from tqdm import tqdm
 
 from environment import DroneNavEnv
 
@@ -71,7 +72,7 @@ def run(episodes=10, verbose=True):
     agent = RuleBasedAgent(grid_size=(env.height, env.width))
     results = []
 
-    for ep in range(episodes):
+    for ep in tqdm(range(episodes), desc="Running episodes", unit="ep"):
         obs, _ = env.reset(seed=ep)
         agent.reset()
         total, steps, path = 0.0, 0, [env.drone_pos]

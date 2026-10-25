@@ -32,6 +32,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical
+from tqdm import tqdm
 
 from environment import DroneNavEnv
 from rule_based_agent import RuleBasedAgent, render
@@ -126,7 +127,8 @@ def train(args):
 
     history = []
     t0 = time.time()
-    for it in range(1, args.iterations + 1):
+    pbar = tqdm(range(1, args.iterations + 1), desc="2D GRPO Training", unit="iter")
+    for it in pbar:
         # 1. Sample groups: G rollouts per start state from the current (old) policy.
         batch_obs, batch_act, batch_adv = [], [], []
         returns, successes = [], []

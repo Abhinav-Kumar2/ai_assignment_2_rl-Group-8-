@@ -4,3 +4,5 @@ numpy
 matplotlib
 PyQt5
 torch
+tqdm
+rich

@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
+from tqdm import tqdm
 
 from agents_3d import Agent3D
 from environment_3d import DroneNavEnv3D
@@ -173,7 +174,7 @@ def train(timesteps=50_000, seed=0, n_envs=8, verbose=1, model_path=MODEL_PATH,
         verbose=verbose,
     )
 
-    model.learn(total_timesteps=timesteps, progress_bar=False)
+    model.learn(total_timesteps=timesteps, progress_bar=True)
     model.save(model_path)
     print(f"\nsaved trained model to: {model_path}")
     return model
@@ -213,7 +214,7 @@ def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR,
     start_rng = np.random.default_rng(seed)
 
     per_episode = []
-    for ep in range(episodes):
+    for ep in tqdm(range(episodes), desc="Evaluating", unit="ep"):
         ep_seed = seed + ep
         obs, _ = env.reset(seed=ep_seed)
         if starts is not None:

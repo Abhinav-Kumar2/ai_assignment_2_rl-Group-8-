@@ -20,6 +20,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.monitor import Monitor
+from tqdm import tqdm
 
 from environment import DroneNavEnv
 from rule_based_agent import render
@@ -63,7 +64,7 @@ def train(timesteps=50_000, seed=0, n_envs=8):
         deterministic=True,
         verbose=0,
     )
-    model.learn(total_timesteps=timesteps, callback=eval_cb, progress_bar=False)
+    model.learn(total_timesteps=timesteps, callback=eval_cb, progress_bar=True)
     model.save(MODEL_PATH)
 
     # EvalCallback saves models/best_model.zip; keep it under a clearer name.
@@ -105,7 +106,7 @@ def evaluate(model_path=MODEL_PATH + "_best", episodes=10, verbose=True):
     env = DroneNavEnv()
     results = []
 
-    for ep in range(episodes):
+    for ep in tqdm(range(episodes), desc="Evaluating", unit="ep"):
         obs, _ = env.reset(seed=ep)
         total, steps, path = 0.0, 0, [env.drone_pos]
         terminated = truncated = False
