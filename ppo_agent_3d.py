@@ -228,13 +228,48 @@ def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR,
         truncated = False
         collision = False
 
+        visited_history = [env.drone_pos]
+        ineffective_steps = 0
+        max_consec_ineffective = 0
+        cur_consec_ineffective = 0
+        oscillations = 0
+        min_dist_to_goal = env._dist_to_target(env.drone_pos)
+        steps_since_progress = 0
+        max_steps_without_progress = 0
+
         while not (terminated or truncated):
+            prev_pos = env.drone_pos
             action = agent.act(obs, env)
             obs, reward, terminated, truncated, info = env.step(action)
+            curr_pos = env.drone_pos
             total_reward += float(reward)
             steps += 1
             if info.get("collision", False):
                 collision = True
+
+            # Track stuck and oscillation diagnostics
+            pos_changed = (curr_pos != prev_pos)
+            if not pos_changed:
+                ineffective_steps += 1
+                cur_consec_ineffective += 1
+                if cur_consec_ineffective > max_consec_ineffective:
+                    max_consec_ineffective = cur_consec_ineffective
+            else:
+                cur_consec_ineffective = 0
+
+            if len(visited_history) >= 2 and curr_pos == visited_history[-2] and pos_changed:
+                oscillations += 1
+
+            dist = env._dist_to_target(curr_pos)
+            if dist < min_dist_to_goal:
+                min_dist_to_goal = dist
+                steps_since_progress = 0
+            else:
+                steps_since_progress += 1
+                if steps_since_progress > max_steps_without_progress:
+                    max_steps_without_progress = steps_since_progress
+
+            visited_history.append(curr_pos)
 
         target_reached = env.drone_pos == env.target_pos
         if target_reached:
@@ -246,6 +281,7 @@ def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR,
         else:
             termination_reason = "other"
 
+        final_dist = env._dist_to_target(env.drone_pos)
         per_episode.append({
             "episode": ep + 1,
             "seed": ep_seed,
@@ -256,11 +292,17 @@ def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR,
             "collision": collision,
             "truncated": truncated,
             "termination_reason": termination_reason,
+            "ineffective_actions": ineffective_steps,
+            "max_consecutive_ineffective": max_consec_ineffective,
+            "oscillations": oscillations,
+            "max_steps_without_progress": max_steps_without_progress,
+            "final_distance_to_goal": final_dist,
         })
 
         if verbose:
             print(f"Episode {ep + 1:3d}: success={target_reached} steps={steps:3d} "
-                  f"reward={total_reward:7.2f} reason={termination_reason}")
+                  f"reward={total_reward:7.2f} reason={termination_reason} "
+                  f"ineffective={ineffective_steps} osc={oscillations} final_dist={final_dist}")
 
     n = len(per_episode)
     successes = sum(1 for e in per_episode if e["success"])
@@ -268,6 +310,9 @@ def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR,
     truncations = sum(1 for e in per_episode if e["truncated"])
     mean_length = float(np.mean([e["steps"] for e in per_episode])) if n else 0.0
     mean_reward = float(np.mean([e["reward"] for e in per_episode])) if n else 0.0
+    mean_ineffective = float(np.mean([e["ineffective_actions"] for e in per_episode])) if n else 0.0
+    mean_oscillations = float(np.mean([e["oscillations"] for e in per_episode])) if n else 0.0
+    mean_final_dist = float(np.mean([e["final_distance_to_goal"] for e in per_episode])) if n else 0.0
 
     summary = {
         "model_path": os.path.relpath(model_path, BASE_DIR),
@@ -279,6 +324,9 @@ def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR,
         "truncation_rate": round(truncations / n, 4) if n else 0.0,
         "average_episode_length": round(mean_length, 2),
         "average_episode_reward": round(mean_reward, 3),
+        "average_ineffective_actions": round(mean_ineffective, 2),
+        "average_oscillations": round(mean_oscillations, 2),
+        "average_final_distance_to_goal": round(mean_final_dist, 2),
         "success_count": successes,
         "collision_count": collisions,
         "truncation_count": truncations,
@@ -292,7 +340,8 @@ def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR,
     csv_path = prefix + "_episodes.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "episode", "seed", "start", "reward", "steps", "success", "collision", "truncated", "termination_reason"
+            "episode", "seed", "start", "reward", "steps", "success", "collision", "truncated", "termination_reason",
+            "ineffective_actions", "max_consecutive_ineffective", "oscillations", "max_steps_without_progress", "final_distance_to_goal"
         ])
         writer.writeheader()
         writer.writerows(per_episode)
@@ -313,6 +362,9 @@ def evaluate(model_path=MODEL_PATH, episodes=10, seed=0, output_dir=RESULTS_DIR,
     print(f"  Truncation rate:        {summary['truncation_rate'] * 100:.1f}% ({truncations}/{n})")
     print(f"  Average episode length: {summary['average_episode_length']:.2f}")
     print(f"  Average episode reward: {summary['average_episode_reward']:.2f}")
+    print(f"  Average final distance: {summary['average_final_distance_to_goal']:.2f}")
+    print(f"  Average oscillations:   {summary['average_oscillations']:.2f}")
+    print(f"  Average ineffective:    {summary['average_ineffective_actions']:.2f}")
     print(f"Saved artifacts:")
     print(f"  CSV:   {csv_path}")
     print(f"  JSON:  {json_path}")
